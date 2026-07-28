@@ -397,6 +397,9 @@ async def create_server_direct(req: PendingQueueReq):
             ),
             timeout=120,
         )
+        if result.get("ok") is False:
+            err = str(result.get("error", "") or "")
+            result["retryable"] = "resource_unavailable" in err.lower() or "412" in err
         return result
     except asyncio.TimeoutError:
         return {"ok": False, "error": "创建超时（120秒），可能是API无可用机器", "retryable": True}
