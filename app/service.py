@@ -1320,5 +1320,55 @@ class MonitorService:
                 import traceback
                 traceback.print_exc()
 
+    async def stock_check(self) -> dict:
+        """查询各机型在各机房的可售状态与价格"""
+        try:
+            types = await self.client.list_server_types()
+        except Exception:
+            types = []
+        try:
+            locations = await self.client.list_locations()
+        except Exception:
+            locations = []
+
+        loc_names = [l.get("name") for l in (locations or []) if isinstance(l, dict)]
+
+        def _type_family(name=""):
+            return name.rstrip("0123456789")
+
+        rows = []
+        for t in (types or []):
+            if not isinstance(t, dict):
+                continue
+            name = t.get("name", "")
+            prices = [p for p in (t.get("prices") or []) if isinstance(p, dict)]
+            sellable = {}
+            for p in prices:
+                loc = p.get("location")
+                if loc:
+                    pm = p.get("price_monthly") or {}
+                    try:
+                        gross = float(pm.get("gross")) if pm.get("gross") is not None else None
+                    except Exception:
+                        gross = None
+                    sellable[loc] = {
+                        "sellable": True,
+                        "monthly_gross_eur": gross,
+                    }
+            for loc in loc_names:
+                if loc not in sellable:
+                    sellable[loc] = {"sellable": False, "monthly_gross_eur": None}
+
+            rows.append({
+                "name": name,
+                "family": _type_family(name),
+                "cores": t.get("cores"),
+                "memory": t.get("memory"),
+                "disk": t.get("disk"),
+                "sellable": sellable,
+            })
+
+        return {"locations": loc_names, "types": rows}
+
 
 monitor = MonitorService()

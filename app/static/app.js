@@ -991,6 +991,53 @@ async function submitCreateWithQueue(){
   }
 }
 
+// ────── 库存查询 ──────
+
+let STOCK_DATA = null
+
+async function loadStockCheck(){
+  const box=byId('stockPanel')
+  if(!box) return
+  box.innerHTML='<div class="daily-mini" style="padding:12px">查询中...</div>'
+  try{
+    const r=await fetch('/api/stock_check')
+    STOCK_DATA = await r.json()
+    renderStockCheck()
+  }catch(e){
+    box.innerHTML='<div class="daily-mini" style="padding:12px;color:var(--red)">查询失败</div>'
+  }
+}
+
+function renderStockCheck(){
+  const box=byId('stockPanel')
+  if(!box || !STOCK_DATA) return
+  const locs=STOCK_DATA.locations||[]
+  const types=STOCK_DATA.types||[]
+  if(!types.length){
+    box.innerHTML='<div class="daily-mini">暂无数据</div>'
+    return
+  }
+  let html='<table class="stock-table"><thead><tr><th>机型</th><th>配置</th>'
+  for(const l of locs) html+=`<th>${l}</th>`
+  html+='</tr></thead><tbody>'
+  for(const t of types){
+    const spec=`${t.cores||'?'}C/${t.memory||'?'}GB/${t.disk||'?'}GB`
+    html+=`<tr><td><b>${t.name}</b></td><td class="spec">${spec}</td>`
+    for(const l of locs){
+      const s=t.sellable?.[l]||{}
+      if(s.sellable){
+        const price=s.monthly_gross_eur?`€${s.monthly_gross_eur.toFixed(2)}`:''
+        html+=`<td class="stock-yes" title="${price}">🟢${price?' '+price:''}</td>`
+      }else{
+        html+=`<td class="stock-no">—</td>`
+      }
+    }
+    html+='</tr>'
+  }
+  html+='</tbody></table>'
+  box.innerHTML=html
+}
+
 if(byId('kw')) byId('kw').addEventListener('input',()=>applyServerFilter())
 initTheme();
 bootstrapFromCache()

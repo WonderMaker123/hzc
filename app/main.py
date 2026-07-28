@@ -479,6 +479,14 @@ async def pending_queue_list():
     return monitor.get_pending_queue()
 
 
+@app.get('/api/stock_check')
+async def stock_check():
+    """查询各机型在各机房的可售状态"""
+    if not settings.hetzner_token:
+        raise HTTPException(status_code=500, detail='HETZNER_TOKEN missing')
+    return await monitor.stock_check()
+
+
 @app.post('/api/pending_queue')
 async def pending_queue_add(req: PendingQueueReq):
     """加入待创建队列"""
