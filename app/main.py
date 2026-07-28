@@ -108,6 +108,15 @@ class AutoPolicyReq(BaseModel):
     image_id: int | str | None = None
 
 
+class PendingQueueReq(BaseModel):
+    name: str
+    server_type: str
+    location: str
+    image: str | int
+    primary_ip_id: int | None = None
+    primary_ipv6_id: int | None = None
+
+
 @app.on_event('startup')
 async def startup_event():
     if settings.hetzner_token:
@@ -116,6 +125,17 @@ async def startup_event():
             'interval',
             minutes=settings.check_interval_minutes,
             id='check-traffic',
+            replace_existing=True,
+            max_instances=1,
+            coalesce=True,
+            next_run_time=dt.datetime.utcnow(),
+            misfire_grace_time=300,
+        )
+        scheduler.add_job(
+            monitor.check_pending_queue,
+            'interval',
+            minutes=settings.check_interval_minutes,
+            id='check-pending-queue',
             replace_existing=True,
             max_instances=1,
             coalesce=True,
@@ -421,3 +441,31 @@ async def action_status(action_id: int):
     if not settings.hetzner_token:
         raise HTTPException(status_code=500, detail='HETZNER_TOKEN missing')
     return await monitor.get_action_status(action_id)
+
+
+# ────────── 待创建队列 API ──────────
+
+
+@app.get('/api/pending_queue')
+async def pending_queue_list():
+    """获取待创建队列列表"""
+    return monitor.get_pending_queue()
+
+
+@app.post('/api/pending_queue')
+async def pending_queue_add(req: PendingQueueReq):
+    """加入待创建队列"""
+    return monitor.add_pending_queue(
+        name=req.name,
+        server_type=req.server_type,
+        location=req.location,
+        image=req.image,
+        primary_ip_id=req.primary_ip_id,
+        primary_ipv6_id=req.primary_ipv6_id,
+    )
+
+
+@app.delete('/api/pending_queue/{item_id}')
+async def pending_queue_cancel(item_id: str):
+    """取消排队项"""
+    return monitor.cancel_pending_queue(item_id)

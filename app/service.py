@@ -8,6 +8,7 @@ from app.qb_client import QBClient
 from app.qb_store import QBStore
 from app.auto_policy_store import AutoPolicyStore
 from app.runtime_config import RuntimeConfig
+from app.pending_store import PendingStore
 
 # Keep same unit behavior as Hetzner panel (binary TiB, though UI labels TB)
 BYTES_IN_TB = 1024**4
@@ -21,6 +22,7 @@ class MonitorService:
         self.qb_store = QBStore(settings.qb_store_path)
         self.auto_policy = AutoPolicyStore(settings.auto_policy_path)
         self.runtime = RuntimeConfig(settings.runtime_config_path)
+        self.pending_queue = PendingStore(settings.pending_queue_path)
         self.last_snapshot = []
         self._collect_cache = []
         self._collect_cache_ts = 0.0
@@ -1234,6 +1236,85 @@ class MonitorService:
     def auto_policy_delete(self, server_id: int):
         self.auto_policy.delete(server_id)
         return {"ok": True, "server_id": server_id}
+
+    # ──────────────────────────────
+    # 待创建队列（API无机器时自动排队重试）
+    # ──────────────────────────────
+
+    def get_pending_queue(self) -> list[dict]:
+        return self.pending_queue.all()
+
+    def add_pending_queue(self, name: str, server_type: str, location: str, image,
+                          primary_ip_id: int | None = None, primary_ipv6_id: int | None = None) -> dict:
+        item = {
+            "name": name,
+            "server_type": server_type,
+            "location": location,
+            "image": image,
+            "primary_ip_id": primary_ip_id,
+            "primary_ipv6_id": primary_ipv6_id,
+        }
+        item_id = self.pending_queue.add(item)
+        return {"ok": True, "id": item_id, "message": "已加入待创建队列，系统将每5分钟检查可用性，有机器后自动创建。"}
+
+    def cancel_pending_queue(self, item_id: str) -> dict:
+        entry = self.pending_queue.get(item_id)
+        if not entry:
+            return {"ok": False, "error": "队列项不存在"}
+        if entry.get("status") != "pending":
+            return {"ok": False, "error": f"当前状态为 {entry.get('status')}，无法取消"}
+        self.pending_queue.update(item_id, status="cancelled")
+        return {"ok": True, "message": "已取消排队"}
+
+    async def check_pending_queue(self):
+        """定时任务：检查并尝试创建 pending 队列中的机器"""
+        items = self.pending_queue.pending_items()
+        if not items:
+            return
+
+        for item in items:
+            item_id = item.get("id")
+            if not item_id:
+                continue
+
+            self.pending_queue.update(item_id, status="creating")
+            try:
+                result = await self.create_server_manual(
+                    name=item.get("name", "pending-server"),
+                    server_type=item.get("server_type", ""),
+                    location=item.get("location", ""),
+                    image=item.get("image", "debian-12"),
+                    primary_ip_id=item.get("primary_ip_id"),
+                    primary_ipv6_id=item.get("primary_ipv6_id"),
+                )
+                if result.get("ok") is False:
+                    err = str(result.get("error", "") or "")
+                    # 仅 resource_unavailable 可重试，其余错误标记为失败
+                    if "resource_unavailable" in err.lower() or "412" in err:
+                        self.pending_queue.update(item_id, status="pending")
+                        continue
+                    self.pending_queue.update(item_id, status="failed", error=err)
+                    await self.tg.send(
+                        f"❌ 排队创建失败: {item.get('name')}\n"
+                        f"错误: {err[:500]}"
+                    )
+                    continue
+
+                # 创建成功
+                srv = result.get("server", {})
+                new_id = srv.get("id")
+                new_ip = (srv.get("public_net") or {}).get("ipv4", {}).get("ip", "-")
+                self.pending_queue.update(item_id, status="created", server_id=new_id)
+                await self.tg.send(
+                    f"✅ 排队创建成功: {item.get('name')}\n"
+                    f"新服务器ID: {new_id}\n"
+                    f"IP: {new_ip}\n"
+                    f"配置: {item.get('server_type')} @ {item.get('location')}"
+                )
+            except Exception as e:
+                self.pending_queue.update(item_id, status="pending")
+                import traceback
+                traceback.print_exc()
 
 
 monitor = MonitorService()
