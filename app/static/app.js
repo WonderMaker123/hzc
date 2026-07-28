@@ -980,26 +980,31 @@ async function submitCreateWithQueue(){
   const ip4=byId('c_primary_ip').value||null
   const ip6=byId('c_primary_ipv6').value||null
   const body={name,server_type:type,location:loc,image,primary_ip_id:ip4,primary_ipv6_id:ip6}
-  // 先直接尝试创建
-  let r=await fetch('/api/create_server',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(body)})
+  // 先同步尝试创建
+  let r=await fetch('/api/create_server_direct',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(body)})
   let d=await r.json()
-  if(d?.ok && d?.queued){
-    toast('创建任务已提交')
+  if(d?.ok && d?.server){
+    // 创建成功
+    toast('服务器创建成功')
     closeCreateModal()
     setTimeout(()=>loadAll(false),2000)
     return
   }
-  // 创建失败，询问是否加入队列
-  if(!confirm(`创建失败（${d?.error||'未知错误'}）。是否加入待创建队列，系统每5分钟自动重试？`)) return
-  r=await fetch('/api/pending_queue',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(body)})
-  d=await r.json()
-  if(d?.ok){
-    toast('已加入待创建队列')
-    closeCreateModal()
-    loadPendingQueue()
-  }else{
-    alert(d?.error||'加入队列失败')
+  // 可重试的错误（API没机器等）→ 自动加入队列
+  if(d?.retryable){
+    r=await fetch('/api/pending_queue',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(body)})
+    d=await r.json()
+    if(d?.ok){
+      toast('已加入待创建队列，系统每5分钟自动重试')
+      closeCreateModal()
+      loadPendingQueue()
+    }else{
+      alert('加入队列失败：'+(d?.error||'未知'))
+    }
+    return
   }
+  // 不可重试的错误 → 提示用户
+  alert('创建失败：'+(d?.error||'未知错误'))
 }
 
 if(byId('kw')) byId('kw').addEventListener('input',()=>applyServerFilter())

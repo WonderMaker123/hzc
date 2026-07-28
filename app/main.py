@@ -380,6 +380,30 @@ async def create_server(req: CreateServerReq):
     return {"ok": True, "queued": True, "job_id": job_id, "message": "create started in background"}
 
 
+@app.post('/api/create_server_direct')
+async def create_server_direct(req: PendingQueueReq):
+    """同步创建：直接尝试创建，成功返回服务器信息，失败原因明确"""
+    if not settings.hetzner_token:
+        raise HTTPException(status_code=500, detail='HETZNER_TOKEN missing')
+    try:
+        result = await asyncio.wait_for(
+            monitor.create_server_manual(
+                name=req.name,
+                server_type=req.server_type,
+                location=req.location,
+                image=req.image,
+                primary_ip_id=req.primary_ip_id,
+                primary_ipv6_id=req.primary_ipv6_id,
+            ),
+            timeout=120,
+        )
+        return result
+    except asyncio.TimeoutError:
+        return {"ok": False, "error": "创建超时（120秒），可能是API无可用机器", "retryable": True}
+    except Exception as e:
+        return {"ok": False, "error": str(e)[:500], "retryable": ("resource_unavailable" in str(e).lower() or "412" in str(e))}
+
+
 @app.delete('/api/snapshot/{image_id}')
 async def delete_snapshot(image_id: int):
     if not settings.hetzner_token:
