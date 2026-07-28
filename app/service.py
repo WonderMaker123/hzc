@@ -466,7 +466,13 @@ class MonitorService:
                     f"当前: {used_tb:.2f} TB / 阈值: {threshold:.2f} TB\n"
                     f"镜像/快照: {image_id}"
                 )
-                await self.rebuild_with_snapshot_manual(row["id"], image_id)
+                result = await self.rebuild_with_snapshot_manual(row["id"], image_id)
+                if not (result or {}).get("ok"):
+                    err = str((result or {}).get("error", "未知错误（重建返回异常）"))[:500]
+                    await self.tg.send(
+                        f"❌ 自动重建失败: {row['name']} (ID:{row['id']})\n"
+                        f"错误: {err}"
+                    )
 
         self.runtime.update({"traffic_guard_state": guard_state})
 
