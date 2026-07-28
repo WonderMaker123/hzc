@@ -345,6 +345,10 @@ class MonitorService:
                 "auto_policy": pol,
             }
             rows.append(row)
+        # 清理未回收的 qB 任务（服务器已删除但 qB 节点配置残留的情况）
+        for sid, t in qb_tasks.items():
+            if not t.done():
+                t.cancel()
         self.last_snapshot = rows
         self._collect_cache = rows
         self._collect_cache_ts = dt.datetime.utcnow().timestamp()
