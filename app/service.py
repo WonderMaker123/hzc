@@ -404,7 +404,9 @@ class MonitorService:
             limit_tb = float(row.get("limit_tb", 20) or 20)
             rt = realtime_used_tb.get(int(row.get("id") or 0))
             if rt:
-                used_tb = float(rt.get("used_tb", used_tb))
+                # 取 metrics 实时值与 list_servers 值的较大者
+                # 避免 metrics 1小时采样率低估导致漏触发
+                used_tb = max(float(rt.get("used_tb", used_tb)), used_tb)
             over = bool(limit_tb > 0 and (used_tb / limit_tb) >= threshold)
 
             st = guard_state.get(sid) or {}
@@ -478,6 +480,11 @@ class MonitorService:
                     await self.tg.send(
                         f"❌ 自动重建失败: {row['name']} (ID:{row['id']})\n"
                         f"错误: {err}"
+                    )
+                elif (result or {}).get("queued"):
+                    await self.tg.send(
+                        f"📋 自动重建已加入待创建队列: {row['name']} (ID:{row['id']})\n"
+                        f"系统将持续重试，有可用机器后自动创建"
                     )
 
         self.runtime.update({"traffic_guard_state": guard_state})
@@ -1009,7 +1016,8 @@ class MonitorService:
 
         name = srv.get("name", f"server-{server_id}")
         server_type = (srv.get("server_type") or {}).get("name")
-        location = ((srv.get("datacenter") or {}).get("location") or {}).get("name")
+        # Hetzner API 返回 location 在顶层字段，部分服务器 datacenter 为 null
+        location = (srv.get("location") or {}).get("name") or ((srv.get("datacenter") or {}).get("location") or {}).get("name")
         if not server_type or not location:
             return {"ok": False, "error": "missing source server type/location"}
 
@@ -1021,6 +1029,10 @@ class MonitorService:
             day_bytes_snapshot = int(await self.client.get_outbound_today_bytes(server_id, settings.timezone))
         except Exception:
             day_bytes_snapshot = 0
+        try:
+            daily_points_snapshot = await self.client.get_outbound_daily(server_id, days=30)
+        except Exception:
+            daily_points_snapshot = []
 
         async def _wait_action_success(action_id: int, title: str):
             for _ in range(90):
@@ -1070,7 +1082,33 @@ class MonitorService:
             self._merge_rollover_daily_history(daily_points_snapshot, exclude_today=True)
             created = await _create_with_retry()
             path = "fast"
-        except Exception:
+        except Exception as e:
+            fast_detail = str(e)
+            if isinstance(e, httpx.HTTPStatusError) and e.response is not None:
+                try:
+                    fast_detail = f"HTTP {e.response.status_code}: {e.response.text}"
+                except Exception:
+                    fast_detail = str(e)
+
+            # 旧服务器已删除但创建失败（无库存）→ 加入待创建队列
+            if "resource_unavailable" in fast_detail.lower() or "\"code\": \"resource_unavailable\"" in fast_detail:
+                self.add_pending_queue(
+                    name=name,
+                    server_type=server_type,
+                    location=location,
+                    image=image,
+                    primary_ip_id=int(ipv4_id) if ipv4_id else None,
+                    primary_ipv6_id=int(ipv6_id) if ipv6_id else None,
+                )
+                await self.tg.send(
+                    f"📋 自动重建已加入待创建队列\n"
+                    f"服务器: {name} (原ID: {server_id})\n"
+                    f"配置: {server_type} @ {location}\n"
+                    f"镜像/快照: {image}\n"
+                    f"原因: Hetzner 当前无可用库存，系统将持续重试"
+                )
+                return {"ok": True, "queued": True, "message": "已加入待创建队列，系统将持续重试"}
+
             # SAFE fallback (best-effort): if old server still exists, poweroff+unassign then create
             try:
                 still = await self.client.get_server(server_id)
